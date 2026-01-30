@@ -97,6 +97,18 @@ jobs:
           docker network prune -f 2>/dev/null || true
           docker volume rm rust-test-config rust-test-server 2>/dev/null || true
 
+      - name: Pre-populate server volume from cache
+        if: ${{ steps.server-cache.outputs.cache-hit == 'true' }}
+        run: |
+          echo "Pre-populating Docker volume from cached server files..."
+          # Create the volume
+          docker volume create rust-test-server
+          # Use a temporary container to copy files into the volume
+          docker run --rm -v rust-test-server:/data -v $(pwd)/data/server:/cache alpine sh -c "cp -r /cache/. /data/ 2>/dev/null || true"
+          echo "Cache pre-population complete"
+          # Show what was copied
+          docker run --rm -v rust-test-server:/data alpine ls -la /data/ | head -20 || true
+
       - name: Run E2E test suite
         id: e2e-tests
         run: |

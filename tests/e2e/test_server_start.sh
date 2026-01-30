@@ -60,20 +60,39 @@ test_server_start() {
         return 1
     fi
 
-    # Wait for server to start (look for startup complete message)
+    # Wait for server to start (look for startup complete message or other success indicators)
     log_info "Waiting for server to initialize (this may take several minutes)"
+    log_info "Looking for 'Server startup complete' or 'SteamServer' in logs..."
+
+    # First try the standard message
     if wait_for_log "rust-server" "Server startup complete" 600; then
-        log_success "Server initialized successfully"
+        log_success "Server initialized successfully (startup complete message found)"
     else
-        # Check if server process is at least running
-        if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
-            log_warn "Server process is running but 'Server startup complete' not found"
-            log_warn "This may be normal if server is still initializing"
-            # Consider this a pass if the process is running
+        # Try alternative success indicators
+        log_info "Standard startup message not found, checking alternative indicators..."
+
+        if wait_for_log "rust-server" "SteamServer" 60; then
+            log_success "Server initialized (SteamServer message found)"
         else
-            log_error "Server process is not running"
-            docker logs rust-server --tail 100
-            return 1
+            # Check if server process is at least running
+            if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
+                log_warn "Server process is running but startup messages not found"
+                log_info "=== Recent container logs ==="
+                docker logs rust-server --tail 30 2>&1 || true
+                log_info "=== End recent logs ==="
+                log_warn "Proceeding - server process is active"
+            else
+                log_error "Server process is not running"
+                log_error "=== Container logs ==="
+                docker logs rust-server --tail 100 2>&1 || true
+                log_error "=== End container logs ==="
+
+                # Show running processes for debugging
+                log_info "=== Running processes ==="
+                MSYS_NO_PATHCONV=1 docker exec rust-server ps aux 2>&1 || true
+                log_info "=== End processes ==="
+                return 1
+            fi
         fi
     fi
 

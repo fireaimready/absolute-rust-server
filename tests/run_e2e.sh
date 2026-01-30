@@ -134,9 +134,13 @@ main() {
     docker rm -f rust-server 2>/dev/null || true
     docker volume rm rust-test-config rust-test-server 2>/dev/null || true
 
-    # Build image
-    log_info "Building Docker image"
-    docker compose -f "${PROJECT_DIR}/docker-compose.test.yml" build --no-cache
+    # Build image (skip if already built by CI)
+    if docker image inspect absolute-rust-server:test > /dev/null 2>&1; then
+        log_info "Using pre-built Docker image (absolute-rust-server:test)"
+    else
+        log_info "Building Docker image"
+        docker compose -f "${PROJECT_DIR}/docker-compose.test.yml" build
+    fi
     log_pass "Test environment ready"
 
     # Start container
