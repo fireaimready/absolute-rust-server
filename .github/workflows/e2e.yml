@@ -112,10 +112,24 @@ jobs:
       - name: Run E2E test suite
         id: e2e-tests
         run: |
-          ./tests/run_e2e.sh
+          # Start tests and show periodic status
+          ./tests/run_e2e.sh &
+          TEST_PID=$!
+
+          # Monitor and show status every 5 minutes while tests run
+          while kill -0 $TEST_PID 2>/dev/null; do
+            sleep 300
+            echo "=== Status check at $(date) ==="
+            docker ps -a || true
+            docker logs rust-server --tail 20 2>&1 || true
+            echo "=== End status check ==="
+          done
+
+          # Wait for tests to complete and get exit code
+          wait $TEST_PID
         env:
-          TEST_TIMEOUT: 600
-          STARTUP_WAIT: 600
+          TEST_TIMEOUT: 900
+          STARTUP_WAIT: 900
 
       # ---------------------------------------------------------------------
       # Collect Artifacts (always, for debugging)

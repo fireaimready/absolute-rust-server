@@ -12,8 +12,9 @@ PROJECT_DIR="$(dirname "${SCRIPT_DIR}")"
 source "${SCRIPT_DIR}/test_helpers.sh"
 
 # Configuration
-TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
-STARTUP_WAIT="${STARTUP_WAIT:-300}"
+# Note: server_start test can take 40+ minutes for initial download
+TEST_TIMEOUT="${TEST_TIMEOUT:-3600}"
+STARTUP_WAIT="${STARTUP_WAIT:-3600}"
 TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0

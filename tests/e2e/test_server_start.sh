@@ -28,12 +28,17 @@ test_server_start() {
         log_warn "SteamCMD update log not found (may have used cached files)"
     fi
 
-    # Wait for server binary to be present
-    log_info "Checking for server binary"
-    local attempts=0
-    local max_attempts=60
+    # Wait for server binary to be present (includes download time)
+    # Rust server download is ~8GB and can take 30+ minutes on first run
+    log_info "Waiting for server binary (includes SteamCMD download time)"
+    log_info "Note: First run may take 30-40 minutes for download"
+    local binary_wait_start
+    binary_wait_start=$(date +%s)
+    local max_binary_wait=2400  # 40 minutes for download
 
-    while [[ ${attempts} -lt ${max_attempts} ]]; do
+    while true; do
+        local elapsed=$(($(date +%s) - binary_wait_start))
+
         # First check if container is still running
         if [[ $(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null) != "true" ]]; then
             log_error "Container stopped unexpectedly during startup"
@@ -45,20 +50,28 @@ test_server_start() {
 
         # Check for server binary
         if MSYS_NO_PATHCONV=1 docker exec rust-server test -f /opt/rust/server/RustDedicated 2>/dev/null; then
-            log_info "Server binary found"
+            log_success "Server binary found after ${elapsed}s"
             break
         fi
-        sleep 5
-        attempts=$((attempts + 1))
-    done
 
-    if [[ ${attempts} -ge ${max_attempts} ]]; then
-        log_error "Server binary not found after ${max_attempts} attempts"
-        log_error "=== Container Logs ==="
-        docker logs rust-server 2>&1 || true
-        log_error "=== End Container Logs ==="
-        return 1
-    fi
+        # Timeout check
+        if [[ ${elapsed} -ge ${max_binary_wait} ]]; then
+            log_error "Server binary not found after ${max_binary_wait}s"
+            log_error "=== Container Logs ==="
+            docker logs rust-server 2>&1 || true
+            log_error "=== End Container Logs ==="
+            return 1
+        fi
+
+        # Progress updates every 60 seconds
+        if [[ $((elapsed % 60)) -eq 0 ]] && [[ ${elapsed} -gt 0 ]]; then
+            log_info "Still waiting for server binary... (${elapsed}s elapsed)"
+            # Show recent log activity
+            docker logs rust-server --tail 5 2>&1 || true
+        fi
+
+        sleep 10
+    done
 
     # Wait for server to start (look for startup complete message or other success indicators)
     log_info "Waiting for server to initialize (this may take several minutes)"
