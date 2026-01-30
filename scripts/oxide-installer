@@ -1,0 +1,236 @@
+#!/bin/bash
+# =============================================================================
+# Oxide Installer - Downloads and installs Oxide/uMod modding framework
+# =============================================================================
+
+# Source common functions
+source /opt/rust/scripts/common
+
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+OXIDE_RELEASE_URL="https://umod.org/games/rust/download"
+OXIDE_BACKUP_URL="https://github.com/OxideMod/Oxide.Rust/releases/latest/download/Oxide.Rust-linux.zip"
+OXIDE_TEMP_DIR="/tmp/oxide_install"
+OXIDE_DOWNLOAD_FILE="${OXIDE_TEMP_DIR}/Oxide.Rust-linux.zip"
+
+# -----------------------------------------------------------------------------
+# Parse arguments
+# -----------------------------------------------------------------------------
+ACTION="install"
+FORCE_INSTALL=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --install|-i)
+            ACTION="install"
+            shift
+            ;;
+        --check-update|-c)
+            ACTION="check-update"
+            shift
+            ;;
+        --force|-f)
+            FORCE_INSTALL=true
+            shift
+            ;;
+        --uninstall|-u)
+            ACTION="uninstall"
+            shift
+            ;;
+        --version|-v)
+            ACTION="version"
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# -----------------------------------------------------------------------------
+# Download Oxide
+# -----------------------------------------------------------------------------
+download_oxide() {
+    log_info "Downloading Oxide/uMod for Rust"
+
+    # Create temp directory
+    mkdir -p "${OXIDE_TEMP_DIR}"
+    rm -f "${OXIDE_DOWNLOAD_FILE}"
+
+    # Try primary download URL
+    log_info "Downloading from: ${OXIDE_RELEASE_URL}"
+    if curl -sL -o "${OXIDE_DOWNLOAD_FILE}" "${OXIDE_RELEASE_URL}" 2>/dev/null; then
+        # Verify it's a valid ZIP file
+        if unzip -t "${OXIDE_DOWNLOAD_FILE}" > /dev/null 2>&1; then
+            log_success "Download successful (primary source)"
+            return 0
+        fi
+    fi
+
+    # Try backup URL (GitHub releases)
+    log_warn "Primary download failed, trying backup source"
+    log_info "Downloading from: ${OXIDE_BACKUP_URL}"
+    if curl -sL -o "${OXIDE_DOWNLOAD_FILE}" "${OXIDE_BACKUP_URL}" 2>/dev/null; then
+        if unzip -t "${OXIDE_DOWNLOAD_FILE}" > /dev/null 2>&1; then
+            log_success "Download successful (backup source)"
+            return 0
+        fi
+    fi
+
+    log_error "Failed to download Oxide from all sources"
+    rm -f "${OXIDE_DOWNLOAD_FILE}"
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Install Oxide
+# -----------------------------------------------------------------------------
+install_oxide() {
+    local rust_data_dir="${RUST_SERVER_PATH}/RustDedicated_Data"
+
+    log_info "=========================================="
+    log_info "Installing Oxide/uMod"
+    log_info "=========================================="
+
+    # Check if server files exist
+    if [[ ! -d "${rust_data_dir}" ]]; then
+        log_error "Rust server not found at ${RUST_SERVER_PATH}"
+        log_error "Please run server update first"
+        return 1
+    fi
+
+    # Check if already installed and not forcing
+    if is_oxide_installed && [[ "${FORCE_INSTALL}" != "true" ]]; then
+        log_info "Oxide is already installed ($(get_oxide_version))"
+        log_info "Use --force to reinstall"
+        return 0
+    fi
+
+    # Download Oxide
+    if ! download_oxide; then
+        return 1
+    fi
+
+    # Extract to server directory
+    log_info "Extracting Oxide to: ${RUST_SERVER_PATH}"
+    if unzip -o "${OXIDE_DOWNLOAD_FILE}" -d "${RUST_SERVER_PATH}" > /dev/null 2>&1; then
+        log_success "Extraction successful"
+    else
+        log_error "Failed to extract Oxide"
+        rm -rf "${OXIDE_TEMP_DIR}"
+        return 1
+    fi
+
+    # Create oxide directories if they don't exist
+    mkdir -p "${RUST_SERVER_PATH}/oxide/config"
+    mkdir -p "${RUST_SERVER_PATH}/oxide/data"
+    mkdir -p "${RUST_SERVER_PATH}/oxide/plugins"
+    mkdir -p "${RUST_SERVER_PATH}/oxide/lang"
+
+    # Set permissions
+    chown -R rust:rust "${RUST_SERVER_PATH}/RustDedicated_Data" 2>/dev/null || true
+    chown -R rust:rust "${RUST_SERVER_PATH}/oxide" 2>/dev/null || true
+
+    # Clean up
+    rm -rf "${OXIDE_TEMP_DIR}"
+
+    # Verify installation
+    if is_oxide_installed; then
+        log_success "Oxide installed successfully"
+        log_info "Oxide directories created:"
+        log_info "  - ${RUST_SERVER_PATH}/oxide/plugins (place plugins here)"
+        log_info "  - ${RUST_SERVER_PATH}/oxide/config (plugin configs)"
+        log_info "  - ${RUST_SERVER_PATH}/oxide/data (plugin data)"
+        return 0
+    else
+        log_error "Oxide installation verification failed"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Check for updates
+# -----------------------------------------------------------------------------
+check_update() {
+    if ! is_oxide_installed; then
+        log_info "Oxide is not installed, installing now"
+        install_oxide
+        return $?
+    fi
+
+    log_info "Checking for Oxide updates"
+
+    # We don't have a reliable way to check version without downloading
+    # So we just reinstall if auto-update is enabled
+    if is_oxide_auto_update_enabled; then
+        log_info "Auto-update enabled, reinstalling Oxide"
+        FORCE_INSTALL=true
+        install_oxide
+        return $?
+    else
+        log_info "Auto-update disabled, skipping"
+        return 0
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Uninstall Oxide
+# -----------------------------------------------------------------------------
+uninstall_oxide() {
+    log_info "Uninstalling Oxide/uMod"
+
+    local rust_data_dir="${RUST_SERVER_PATH}/RustDedicated_Data"
+
+    if ! is_oxide_installed; then
+        log_info "Oxide is not installed"
+        return 0
+    fi
+
+    # Remove Oxide core files
+    rm -f "${rust_data_dir}/Managed/Oxide.Core.dll" 2>/dev/null || true
+    rm -f "${rust_data_dir}/Managed/Oxide.Rust.dll" 2>/dev/null || true
+    rm -f "${rust_data_dir}/Managed/Oxide.References.dll" 2>/dev/null || true
+
+    # Note: We don't remove oxide/ directory as it may contain user plugins/data
+    log_warn "Oxide core files removed"
+    log_warn "The oxide/ directory was preserved (contains plugins and data)"
+    log_warn "Remove ${RUST_SERVER_PATH}/oxide manually if desired"
+
+    log_success "Oxide uninstalled"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Show version
+# -----------------------------------------------------------------------------
+show_version() {
+    if is_oxide_installed; then
+        log_info "Oxide version: $(get_oxide_version)"
+    else
+        log_info "Oxide is not installed"
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Main logic
+# -----------------------------------------------------------------------------
+case "${ACTION}" in
+    install)
+        install_oxide
+        ;;
+    check-update)
+        check_update
+        ;;
+    uninstall)
+        uninstall_oxide
+        ;;
+    version)
+        show_version
+        ;;
+    *)
+        echo "Usage: $0 {--install|--check-update|--uninstall|--version} [--force]"
+        exit 1
+        ;;
+esac

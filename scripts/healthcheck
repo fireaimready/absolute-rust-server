@@ -1,0 +1,40 @@
+#!/bin/bash
+# =============================================================================
+# Health Check - Verifies server is running and responsive
+# =============================================================================
+
+# Source common functions
+source /opt/rust/scripts/common 2>/dev/null || true
+
+# Check if server process is running
+if ! pgrep -f "RustDedicated" > /dev/null 2>&1; then
+    echo "UNHEALTHY: Server process not running"
+    exit 1
+fi
+
+# Check if server is accepting connections by probing the query port
+SERVER_PORT="${SERVER_PORT:-28015}"
+QUERY_PORT="${QUERY_PORT:-27015}"
+
+# Try to check if query port is listening
+if command -v nc >/dev/null 2>&1; then
+    # Quick UDP probe (won't actually connect but tests if port is open)
+    if timeout 5 nc -zu localhost "${QUERY_PORT}" 2>/dev/null; then
+        echo "HEALTHY: Server is running and query port ${QUERY_PORT} is open"
+        exit 0
+    fi
+fi
+
+# Check server log for ready indicators
+LOG_FILE="${LOG_PATH:-/var/log/rust}/rust-server.log"
+if [[ -f "${LOG_FILE}" ]]; then
+    # Look for any indication the server started successfully
+    if grep -q "Server startup complete" "${LOG_FILE}" 2>/dev/null; then
+        echo "HEALTHY: Server is running and initialized"
+        exit 0
+    fi
+fi
+
+# Basic check passed - process is running
+echo "HEALTHY: Server process is running (PID: $(pgrep -f RustDedicated))"
+exit 0

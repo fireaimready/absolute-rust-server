@@ -1,0 +1,131 @@
+#!/bin/bash
+# =============================================================================
+# Rust Log Filter - Filters and formats server output
+# =============================================================================
+
+# Source common functions for logging
+source /opt/rust/scripts/common 2>/dev/null || true
+
+# Log file path
+LOG_FILE="${LOG_PATH:-/var/log/rust}/rust-server.log"
+
+# Ensure log directory exists
+mkdir -p "$(dirname "${LOG_FILE}")"
+
+# Important patterns to NEVER filter
+IMPORTANT_PATTERNS=(
+    "Player"
+    "connect"
+    "disconnect"
+    "Error"
+    "error"
+    "Exception"
+    "Warning"
+    "Server startup"
+    "Saving"
+    "Load"
+    "RCON"
+    "Chat"
+    "[CHAT]"
+    "Ban"
+    "Kick"
+    "killed"
+    "death"
+)
+
+# Default patterns to filter out (noisy Unity/Facepunch logs)
+DEFAULT_FILTER_PATTERNS=(
+    "^$"
+    "^\s*$"
+    "Loading asset bundle"
+    "Unloading.*bundled"
+    "LOD"
+    "prefab"
+    "Shader"
+    "Material"
+    "Mesh"
+    "Texture"
+    "AudioClip"
+    "AssetBundle"
+    "Unity"
+    "MonoBehaviour"
+    "^\\[\\s*\\]"
+    "GC.Alloc"
+    "Memory"
+    "Pool"
+    "ConVar"
+    "Filesystem"
+    "Loading prefab"
+)
+
+# Check if line contains important patterns
+is_important() {
+    local line="$1"
+    for pattern in "${IMPORTANT_PATTERNS[@]}"; do
+        if [[ "${line}" == *"${pattern}"* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Check if line should be filtered
+should_filter() {
+    local line="$1"
+
+    # Never filter important lines
+    if is_important "${line}"; then
+        return 1  # Don't filter
+    fi
+
+    # Filter empty lines if enabled
+    if [[ "${LOG_FILTER_EMPTY_LINES:-true}" == "true" ]]; then
+        if [[ -z "${line// }" ]]; then
+            return 0  # Filter
+        fi
+    fi
+
+    # Check default filter patterns
+    if [[ "${LOG_FILTER_ENABLED:-true}" == "true" ]]; then
+        for pattern in "${DEFAULT_FILTER_PATTERNS[@]}"; do
+            if [[ "${line}" =~ ${pattern} ]]; then
+                return 0  # Filter
+            fi
+        done
+    fi
+
+    # Check custom filter patterns
+    if [[ -n "${LOG_FILTER_CONTAINS}" ]]; then
+        IFS='|' read -ra custom_patterns <<< "${LOG_FILTER_CONTAINS}"
+        for pattern in "${custom_patterns[@]}"; do
+            if [[ "${line}" == *"${pattern}"* ]]; then
+                return 0  # Filter
+            fi
+        done
+    fi
+
+    return 1  # Don't filter
+}
+
+# Process each line of input
+while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Skip if should be filtered
+    if should_filter "${line}"; then
+        continue
+    fi
+
+    # Add timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # Check if this is an important line
+    if is_important "${line}"; then
+        formatted_line="[${timestamp}] [IMPORTANT] ${line}"
+    else
+        formatted_line="[${timestamp}] ${line}"
+    fi
+
+    # Output to both stdout and log file
+    echo "${formatted_line}"
+    echo "${formatted_line}" >> "${LOG_FILE}"
+
+done

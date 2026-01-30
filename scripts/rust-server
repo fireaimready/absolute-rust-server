@@ -1,0 +1,210 @@
+#!/bin/bash
+# =============================================================================
+# Rust Server - Start, stop, and manage the Rust dedicated server
+# =============================================================================
+
+# Source common functions
+source /opt/rust/scripts/common
+
+# -----------------------------------------------------------------------------
+# Build server arguments
+# -----------------------------------------------------------------------------
+build_server_args() {
+    local args="-batchmode"
+
+    # Server identity (required)
+    args="${args} +server.identity \"$(get_server_identity)\""
+
+    # Network settings
+    args="${args} +server.port $(get_server_port)"
+    args="${args} +server.queryport $(get_query_port)"
+
+    # World settings
+    args="${args} +server.level \"$(get_server_level)\""
+    args="${args} +server.worldsize $(get_server_worldsize)"
+
+    # Seed - use stored seed or generate new one
+    local seed
+    seed=$(get_server_seed)
+    args="${args} +server.seed ${seed}"
+
+    # Server info (command line for visibility, also in server.cfg)
+    args="${args} +server.hostname \"$(get_server_name)\""
+    args="${args} +server.maxplayers $(get_max_players)"
+    args="${args} +server.saveinterval $(get_save_interval)"
+
+    # RCON settings
+    if is_rcon_enabled; then
+        args="${args} +rcon.port $(get_rcon_port)"
+        if [[ -n "${RCON_PASSWORD}" ]]; then
+            args="${args} +rcon.password \"${RCON_PASSWORD}\""
+        fi
+        if is_rcon_web_enabled; then
+            args="${args} +rcon.web 1"
+        fi
+    fi
+
+    # Custom arguments
+    if [[ -n "${CUSTOM_ARGS}" ]]; then
+        args="${args} ${CUSTOM_ARGS}"
+    fi
+
+    echo "${args}"
+}
+
+# -----------------------------------------------------------------------------
+# Start the server
+# -----------------------------------------------------------------------------
+start_server() {
+    if is_server_running; then
+        log_warn "Server is already running (PID: $(get_server_pid))"
+        return 0
+    fi
+
+    log_info "Starting Rust dedicated server"
+
+    # Verify binary exists
+    if [[ ! -x "${RUST_SERVER_BINARY}" ]]; then
+        log_error "Server binary not found or not executable: ${RUST_SERVER_BINARY}"
+        return 1
+    fi
+
+    # Build arguments
+    local args
+    args=$(build_server_args)
+
+    log_info "Server arguments: ${args}"
+
+    # Change to server directory
+    cd "${RUST_SERVER_PATH}"
+
+    # Start server in background with log filtering
+    # Note: eval is needed to properly handle quoted arguments
+    eval "${RUST_SERVER_BINARY} ${args}" 2>&1 | /opt/rust/scripts/rust-logfilter &
+
+    # Wait a moment for the process to start
+    sleep 5
+
+    # Find and save the actual server PID
+    local actual_pid
+    actual_pid=$(pgrep -f "RustDedicated" | head -1)
+
+    if [[ -n "${actual_pid}" ]]; then
+        echo "${actual_pid}" > "${RUST_SERVER_PID}"
+        log_success "Server started with PID: ${actual_pid}"
+        return 0
+    else
+        log_error "Failed to start server"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Stop the server
+# -----------------------------------------------------------------------------
+stop_server() {
+    if ! is_server_running; then
+        log_info "Server is not running"
+        return 0
+    fi
+
+    local pid
+    pid=$(get_server_pid)
+
+    log_info "Stopping Rust server (PID: ${pid})"
+
+    # Send SIGINT for graceful shutdown (allows world save)
+    log_info "Sending SIGINT to server (PID: ${pid}) for graceful shutdown"
+    kill -SIGINT "${pid}" 2>/dev/null || true
+
+    # Wait for graceful shutdown (up to 120 seconds for world save)
+    local timeout=120
+    local elapsed=0
+
+    while kill -0 "${pid}" 2>/dev/null; do
+        if [[ ${elapsed} -ge ${timeout} ]]; then
+            log_warn "Graceful shutdown timed out, sending SIGKILL"
+            kill -9 "${pid}" 2>/dev/null || true
+            sleep 2
+            break
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    # Clean up PID file
+    rm -f "${RUST_SERVER_PID}"
+
+    log_success "Server stopped"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Restart the server
+# -----------------------------------------------------------------------------
+restart_server() {
+    log_info "Restarting Rust server"
+    stop_server
+    sleep 5
+    start_server
+}
+
+# -----------------------------------------------------------------------------
+# Server status
+# -----------------------------------------------------------------------------
+status_server() {
+    if is_server_running; then
+        local pid
+        pid=$(get_server_pid)
+        log_info "Server is running (PID: ${pid})"
+        log_info "Build ID: $(get_installed_build_id)"
+        if is_oxide_enabled; then
+            log_info "Oxide: $(get_oxide_version)"
+        fi
+        return 0
+    else
+        log_info "Server is not running"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Main entry point
+# -----------------------------------------------------------------------------
+case "${1:-start}" in
+    start)
+        start_server
+        # Keep the script running for supervisor
+        while true; do
+            sleep 30
+
+            if ! is_server_running; then
+                # Server process not found - check if we should restart
+                new_pid=$(pgrep -f "RustDedicated" 2>/dev/null | head -1)
+
+                if [[ -n "${new_pid}" ]]; then
+                    # Process exists, just update PID file
+                    log_info "Server process found with PID: ${new_pid}"
+                    echo "${new_pid}" > "${RUST_SERVER_PID}"
+                else
+                    # Process truly gone - restart it
+                    log_warn "Server process not running, restarting..."
+                    start_server
+                fi
+            fi
+        done
+        ;;
+    stop)
+        stop_server
+        ;;
+    restart)
+        restart_server
+        ;;
+    status)
+        status_server
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

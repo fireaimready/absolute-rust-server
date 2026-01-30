@@ -1,0 +1,183 @@
+#!/bin/bash
+# =============================================================================
+# Rust Backup - Creates and manages server backups
+# =============================================================================
+
+# Source common functions
+source /opt/rust/scripts/common
+
+# -----------------------------------------------------------------------------
+# Parse arguments
+# -----------------------------------------------------------------------------
+FORCE_BACKUP=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force|-f)
+            FORCE_BACKUP=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# -----------------------------------------------------------------------------
+# Check if backup should be skipped
+# -----------------------------------------------------------------------------
+should_skip_backup() {
+    if [[ "${FORCE_BACKUP}" == "true" ]]; then
+        return 1  # Don't skip
+    fi
+
+    # Check if backups are enabled
+    if ! is_backups_enabled; then
+        log_info "Backups are disabled"
+        return 0  # Skip
+    fi
+
+    # Check if we should only backup when idle
+    if [[ "${BACKUPS_IF_IDLE,,}" == "true" ]]; then
+        local player_count
+        player_count=$(get_player_count)
+        if [[ "${player_count}" -gt 0 ]]; then
+            log_info "Skipping backup: ${player_count} player(s) online"
+            return 0  # Skip
+        fi
+    fi
+
+    return 1  # Don't skip
+}
+
+# -----------------------------------------------------------------------------
+# Create backup
+# -----------------------------------------------------------------------------
+create_backup() {
+    local timestamp
+    timestamp=$(date '+%Y%m%d_%H%M%S')
+    local backup_name="rust_${timestamp}"
+    local backup_dir="${BACKUPS_PATH}/${backup_name}"
+    local server_data_path
+    server_data_path=$(get_server_data_path)
+
+    log_info "=========================================="
+    log_info "Creating backup: ${backup_name}"
+    log_info "=========================================="
+
+    # Create temp backup directory
+    mkdir -p "${backup_dir}"
+
+    # Copy server identity data (saves, blueprints, etc.)
+    if [[ -d "${server_data_path}" ]]; then
+        log_info "Backing up server data from: ${server_data_path}"
+        cp -r "${server_data_path}" "${backup_dir}/server_data" 2>/dev/null || true
+        log_info "Copied: Server data directory"
+    else
+        log_warn "Server data directory not found: ${server_data_path}"
+    fi
+
+    # Copy Oxide data if present
+    if is_oxide_installed; then
+        local oxide_data="${RUST_SERVER_PATH}/oxide"
+        if [[ -d "${oxide_data}" ]]; then
+            log_info "Backing up Oxide data"
+            mkdir -p "${backup_dir}/oxide"
+            cp -r "${oxide_data}/config" "${backup_dir}/oxide/config" 2>/dev/null || true
+            cp -r "${oxide_data}/data" "${backup_dir}/oxide/data" 2>/dev/null || true
+            cp -r "${oxide_data}/plugins" "${backup_dir}/oxide/plugins" 2>/dev/null || true
+            log_info "Copied: Oxide configuration and data"
+        fi
+    fi
+
+    # Check if backup has any content
+    if [[ ! "$(ls -A "${backup_dir}" 2>/dev/null)" ]]; then
+        log_warn "No data to backup, removing empty backup directory"
+        rm -rf "${backup_dir}"
+        return 1
+    fi
+
+    # Create compressed archive
+    local compression="${BACKUPS_COMPRESSION:-zip}"
+    local archive_file
+
+    case "${compression}" in
+        tar.gz|tgz)
+            archive_file="${BACKUPS_PATH}/${backup_name}.tar.gz"
+            log_info "Creating TAR.GZ backup: ${archive_file}"
+            tar -czf "${archive_file}" -C "${BACKUPS_PATH}" "${backup_name}"
+            ;;
+        *)
+            archive_file="${BACKUPS_PATH}/${backup_name}.zip"
+            log_info "Creating ZIP backup: ${archive_file}"
+            (cd "${BACKUPS_PATH}" && zip -rq "${backup_name}.zip" "${backup_name}")
+            ;;
+    esac
+
+    # Remove temp directory
+    rm -rf "${backup_dir}"
+
+    # Get backup size
+    local backup_size
+    backup_size=$(du -h "${archive_file}" | cut -f1)
+
+    log_success "Backup created: ${archive_file} (${backup_size})"
+
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Clean up old backups
+# -----------------------------------------------------------------------------
+cleanup_old_backups() {
+    local max_age="${BACKUPS_MAX_AGE:-7}"
+    local max_count="${BACKUPS_MAX_COUNT:-0}"
+
+    log_info "Cleaning up old backups (max_age=${max_age} days, max_count=${max_count})"
+
+    # Delete backups older than max_age days
+    if [[ "${max_age}" -gt 0 ]]; then
+        find "${BACKUPS_PATH}" -name 'rust_*.zip' -o -name 'rust_*.tar.gz' -mtime "+${max_age}" -delete 2>/dev/null || true
+    fi
+
+    # Keep only max_count most recent backups
+    if [[ "${max_count}" -gt 0 ]]; then
+        local backup_count
+        backup_count=$(find "${BACKUPS_PATH}" -name 'rust_*.zip' -o -name 'rust_*.tar.gz' 2>/dev/null | wc -l)
+
+        if [[ "${backup_count}" -gt "${max_count}" ]]; then
+            local to_delete=$((backup_count - max_count))
+            log_info "Removing ${to_delete} oldest backup(s) to maintain max count of ${max_count}"
+
+            find "${BACKUPS_PATH}" -name 'rust_*.zip' -o -name 'rust_*.tar.gz' -printf '%T+ %p\n' 2>/dev/null \
+                | sort \
+                | head -n "${to_delete}" \
+                | cut -d' ' -f2- \
+                | xargs -r rm -f
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Main logic
+# -----------------------------------------------------------------------------
+main() {
+    # Check if backup should be skipped
+    if should_skip_backup; then
+        return 0
+    fi
+
+    # Create backup
+    if create_backup; then
+        # Clean up old backups
+        cleanup_old_backups
+        log_success "Backup process completed"
+        return 0
+    else
+        log_error "Backup failed"
+        return 1
+    fi
+}
+
+# Run main function
+main

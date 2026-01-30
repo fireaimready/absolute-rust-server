@@ -1,0 +1,67 @@
+# =============================================================================
+# Absolute Rust Server - Docker Compose Test Configuration
+# =============================================================================
+# Minimal configuration for E2E testing
+# =============================================================================
+
+services:
+  rust-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: absolute-rust-server:test
+    container_name: rust-server
+
+    # Ports
+    ports:
+      - "28015:28015/udp"
+      - "28016:28016/tcp"
+      - "28017:28017/tcp"
+      - "27015:27015/udp"
+
+    # Volumes
+    volumes:
+      - rust-test-server:/opt/rust/server
+      - rust-test-config:/config
+
+    # Test environment - minimal settings
+    environment:
+      # Server Settings (small world for faster startup)
+      - SERVER_NAME=E2E Test Server
+      - SERVER_IDENTITY=test_server
+      - SERVER_SEED=12345
+      - SERVER_WORLDSIZE=1000
+      - SERVER_MAXPLAYERS=4
+      - SERVER_LEVEL=Procedural Map
+      - SERVER_SAVEINTERVAL=300
+
+      # RCON disabled for simpler testing
+      - RCON_ENABLED=false
+
+      # No Oxide for faster tests
+      - ENABLE_OXIDE=false
+
+      # Update settings
+      - UPDATE_ON_START=true
+      - UPDATE_TIMEOUT=1800
+
+      # Backups enabled for testing
+      - BACKUPS_ENABLED=true
+      - BACKUPS_CRON=0 * * * *
+
+      # System
+      - TZ=UTC
+
+    # Health check with longer start period for CI
+    healthcheck:
+      test: ["CMD", "/opt/rust/scripts/healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
+
+volumes:
+  rust-test-server:
+    name: rust-test-server
+  rust-test-config:
+    name: rust-test-config

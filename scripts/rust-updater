@@ -1,0 +1,164 @@
+#!/bin/bash
+# =============================================================================
+# Rust Updater - Manages server updates via SteamCMD
+# =============================================================================
+
+# Source common functions
+source /opt/rust/scripts/common
+
+# -----------------------------------------------------------------------------
+# Parse arguments
+# -----------------------------------------------------------------------------
+FORCE_UPDATE=false
+CHECK_ONLY=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force|-f)
+            FORCE_UPDATE=true
+            shift
+            ;;
+        --check|-c)
+            CHECK_ONLY=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# -----------------------------------------------------------------------------
+# Check if update should be skipped
+# -----------------------------------------------------------------------------
+should_skip_update() {
+    if [[ "${FORCE_UPDATE}" == "true" ]]; then
+        return 1  # Don't skip
+    fi
+
+    # Check if we should only update when idle
+    if [[ "${UPDATE_IF_IDLE,,}" == "true" ]]; then
+        local player_count
+        player_count=$(get_player_count)
+        if [[ "${player_count}" -gt 0 ]]; then
+            log_info "Skipping update: ${player_count} player(s) online"
+            return 0  # Skip
+        fi
+    fi
+
+    return 1  # Don't skip
+}
+
+# -----------------------------------------------------------------------------
+# Run SteamCMD update
+# -----------------------------------------------------------------------------
+run_update() {
+    local steamcmd_log="${LOG_PATH}/steamcmd.log"
+
+    log_info "=========================================="
+    log_info "Starting Rust server update"
+    log_info "=========================================="
+    log_info "SteamCMD path: ${STEAMCMD_PATH}"
+    log_info "Install directory: ${RUST_SERVER_PATH}"
+    log_info "App ID: ${RUST_APP_ID}"
+    log_info "SteamCMD log: ${steamcmd_log}"
+
+    # Build SteamCMD command
+    local steamcmd_args="+@sSteamCmdForcePlatformType linux"
+    steamcmd_args="${steamcmd_args} +force_install_dir ${RUST_SERVER_PATH}"
+    steamcmd_args="${steamcmd_args} +login anonymous"
+    steamcmd_args="${steamcmd_args} +app_update ${RUST_APP_ID} validate"
+    steamcmd_args="${steamcmd_args} +quit"
+
+    # Run SteamCMD
+    local start_time
+    start_time=$(date +%s)
+
+    # SteamCMD can return non-zero exit codes for warnings, so we capture output
+    set +e
+    run_steamcmd ${steamcmd_args} 2>&1 | tee "${steamcmd_log}"
+    local exit_code=${PIPESTATUS[0]}
+    set -e
+
+    local end_time
+    end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+
+    # Check if update was successful
+    # SteamCMD exit codes: 0 = success, 7 = warning (still success)
+    if [[ ${exit_code} -eq 0 ]] || [[ ${exit_code} -eq 7 ]]; then
+        local build_id
+        build_id=$(get_installed_build_id)
+        log_success "Update completed in ${duration}s (Build: ${build_id})"
+
+        # Save build ID
+        echo "${build_id}" > "${RUST_SERVER_PATH}/.build_id"
+
+        return 0
+    else
+        # Check if binary exists despite error
+        if [[ -f "${RUST_SERVER_BINARY}" ]]; then
+            log_warn "SteamCMD exited with code ${exit_code}, but server files exist"
+            return 0
+        else
+            log_error "Update failed with exit code ${exit_code}"
+            return 1
+        fi
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Main logic
+# -----------------------------------------------------------------------------
+main() {
+    # Get current build ID
+    local current_build
+    current_build=$(get_installed_build_id)
+    log_info "Current installed build ID: ${current_build}"
+
+    # Check only mode
+    if [[ "${CHECK_ONLY}" == "true" ]]; then
+        log_info "Check mode: Would update from build ${current_build}"
+        return 0
+    fi
+
+    # Check if update should be skipped
+    if should_skip_update; then
+        return 0
+    fi
+
+    # Check if server is running
+    local was_running=false
+    if is_server_running; then
+        was_running=true
+        log_info "Stopping server for update"
+        /opt/rust/scripts/rust-server stop
+        sleep 5
+    fi
+
+    # Run update
+    if run_update; then
+        log_success "Update process completed"
+
+        # Restart server if it was running
+        if [[ "${was_running}" == "true" ]]; then
+            log_info "Restarting server after update"
+            /opt/rust/scripts/rust-server start
+        fi
+
+        return 0
+    else
+        log_error "Update failed"
+
+        # Try to restart server anyway if it was running
+        if [[ "${was_running}" == "true" ]] && [[ -f "${RUST_SERVER_BINARY}" ]]; then
+            log_warn "Attempting to restart server with existing files"
+            /opt/rust/scripts/rust-server start
+        fi
+
+        return 1
+    fi
+}
+
+# Run main function
+main
